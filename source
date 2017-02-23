@@ -1,6 +1,6 @@
-train <- read.csv("train.csv")
-test <- read.csv("test.csv")
-
+train <- read.csv("train.csv", header = TRUE)
+test <- read.csv("test.csv", header = TRUE)
+library(stringr)
 
 # Join together the test and train sets for easier feature engineering
 test$Survived <- NA
@@ -9,9 +9,13 @@ combi <- rbind(train, test)
 # Convert to a string
 combi$Name <- as.character(combi$Name)
 
+
 # Engineered variable: Title
 combi$Title <- sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
 combi$Title <- sub(' ', '', combi$Title)
+combi$Count <- str_count(strsplit(combi$Name, split = " "), pattern = "[[:alpha:]]")
+combi$Cabin <- substr(combi$Cabin, start = 1, stop = 1)
+
 # Combine small title groups
 combi$Title[combi$Title %in% c('Mme', 'Mlle')] <- 'Mlle'
 combi$Title[combi$Title %in% c('Capt', 'Don', 'Major', 'Sir')] <- 'Sir'
@@ -52,7 +56,7 @@ combi$Embarked <- factor(combi$Embarked)
 # Fill in Fare NAs
 summary(combi$Fare)
 which(is.na(combi$Fare))
-combi$Fare[1044] <- median(combi$Fare, na.rm=TRUE)
+combi$Fare[1044] <- 8.05
 
 # New factor for Random Forests, only allowed <32 levels, so reduce number
 combi$FamilyID2 <- combi$FamilyID
@@ -62,25 +66,30 @@ combi$FamilyID2[combi$FamilySize <= 3] <- 'Small'
 # And convert back to factor
 combi$FamilyID2 <- factor(combi$FamilyID2)
 
-# Split back into test and train sets
+combi$Mother <- "No"
+combi$Mother[combi$Age >= 18 & combi$Sex=="female" & combi$Title!="Miss" & combi$Parch >0] <- "Yes" 
+combi$Mother <- as.factor(combi$Mother)
+combi$Cabin <- as.factor(combi$Cabin)
+  # Split back into test and train sets
 train <- combi[1:891,]
 test <- combi[892:1309,]
 
 # Build Random Forest Ensemble
 set.seed(415)
-fit <- randomForest(as.factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID2,
+fit <- randomForest(as.factor(Survived) ~ Pclass +Cabin+ Sex + Age +Count+ 
+                      SibSp + Parch + Fare +Mother+ Embarked + Title + FamilySize + FamilyID2,
                     data=train, importance=TRUE, ntree=2000)
 # Look at variable importance
 varImpPlot(fit)
 # Now let's make a prediction and write a submission file
 Prediction <- predict(fit, test)
 submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
-write.csv(submit, file = "firstforest.csv", row.names = FALSE)
+write.csv(submit, file = "forest.csv", row.names = FALSE)
 
 # Build condition inference tree Random Forest
 set.seed(415)
-fit <- cforest(as.factor(Survived) ~ Pclass + Sex + Age +ac+ SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID,data= train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
+fit <- cforest(as.factor(Survived) ~ Pclass + Sex +Count+ Age+ SibSp +Cabin+ Mother +Parch + Fare + Embarked + Title + FamilySize + FamilyID,data= train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
 # Now let's make a prediction and write a submission file
 Prediction <- predict(fit, test, OOB=TRUE, type = "response")
 submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
-write.csv(submit, file = "cforest.csv", row.names = FALSE)
+write.csv(submit, file = "final.csv", row.names = FALSE)
