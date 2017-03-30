@@ -14,6 +14,11 @@ combi$Name <- as.character(combi$Name)
 combi$Title <- sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
 combi$Title <- sub(' ', '', combi$Title)
 combi$Count <- str_count(strsplit(combi$Name, split = " "), pattern = "[[:alpha:]]")
+combi$length <- "big"
+combi$length[combi$Count <=26] <- "medium"
+combi$length[combi$Count <= 17] <- "small"
+combi$length <- as.factor(combi$length)
+summary(combi$length)
 combi$Cabin <- substr(combi$Cabin, start = 1, stop = 1)
 
 # Combine small title groups
@@ -22,10 +27,22 @@ combi$Title[combi$Title %in% c('Capt', 'Don', 'Major', 'Sir')] <- 'Sir'
 combi$Title[combi$Title %in% c('Dona', 'Lady', 'the Countess', 'Jonkheer')] <- 'Lady'
 # Convert to a factor
 combi$Title <- factor(combi$Title)
+combi$tit[combi$Title=="Master"|combi$Title=="Mr"] <- "common"
+combi$tit <- "special"
+combi$tit <- as.factor(combi$tit)
 
 # Engineered variable: Family size
-combi$FamilySize <- combi$SibSp + combi$Parch + 1
+combi$Ssp <- "large"
+combi$Ssp[combi$SibSp <4] <- "medium"
+combi$Ssp[combi$SibSp<2] <- "small"
 
+combi$FamilySize <- combi$SibSp + combi$Parch + 1
+combi$size <- "big"
+combi$size[combi$FamilySize <= 6] <- "medium"
+combi$size[combi$FamilySize <= 3] <- "small"
+combi$size[combi$FamilySize==1] <- "single"
+combi$size <- as.factor(combi$size)
+summary(combi$size)
 # Engineered variable: Family
 combi$Surname <- sapply(combi$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][1]})
 combi$FamilyID <- paste(as.character(combi$FamilySize), combi$Surname, sep="")
@@ -46,18 +63,34 @@ summary(combi$Age)
 Agefit <- rpart(Age ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + Title + FamilySize, 
                 data=combi[!is.na(combi$Age),], method="anova")
 combi$Age[is.na(combi$Age)] <- predict(Agefit, combi[is.na(combi$Age),])
+combi$NAge <- "old"
+combi$NAge[combi$Age<=50 & combi$Age >15] <- "adult"
+combi$NAge[combi$Age<=15 & combi$Age >5] <- "child"
+combi$NAge[combi$Age <=5] <- "baby"
+combi$NAge <- as.factor(combi$NAge)
+combi$child <- "no"
+combi$child[combi$Age <15 & (combi$size=="small"|combi$size=="single")]  <- "yes"
 # Check what else might be missing
-summary(combi)
+combi$child <- as.factor(combi$child)
+summary(combi$child)
 # Fill in Embarked blanks
 summary(combi$Embarked)
 which(combi$Embarked == '')
 combi$Embarked[c(62,830)] = "S"
+combi$Cabin <- as.character(combi$Cabin)
+combi$Cabin[combi$Cabin==""]<- "None"
+
+cabins<- c("A","B","C","D","E","F","G","T")
 combi$Embarked <- factor(combi$Embarked)
 # Fill in Fare NAs
 summary(combi$Fare)
 which(is.na(combi$Fare))
 combi$Fare[1044] <- 8.05
-
+combi$money <- "rich"
+combi$money[combi$Fare<100] <-"middle"
+combi$money[combi$Fare<40] <- "regular"
+combi$money[combi$Fare <20] <- "lower"
+combi$money <- as.factor(combi$money)
 # New factor for Random Forests, only allowed <32 levels, so reduce number
 combi$FamilyID2 <- combi$FamilyID
 # Convert back to string
@@ -67,29 +100,76 @@ combi$FamilyID2[combi$FamilySize <= 3] <- 'Small'
 combi$FamilyID2 <- factor(combi$FamilyID2)
 
 combi$Mother <- "No"
-combi$Mother[combi$Age >= 18 & combi$Sex=="female" & combi$Title!="Miss" & combi$Parch >0] <- "Yes" 
+combi$Mother[combi$Age>18 & combi$Sex=="female" & combi$Title!="Miss" & combi$Parch >0] <- "Yes" 
 combi$Mother <- as.factor(combi$Mother)
 combi$Cabin <- as.factor(combi$Cabin)
+
+combi_full <- combi[, c("PassengerId","Pclass","child","Parch","FamilyID2","Fare","Age","FamilySize",
+                        "money","Sex","size","Ssp","tit" ,"NAge","length", "Count","SibSp","Mother",
+                        "Cabin","Embarked","Title")]
+
+library(caret)
+
+dummies <- dummyVars(~ Sex+ Cabin+Title+ Mother+ Pclass+ Embarked+
+                       Count+ Fare+ Age+ FamilyID2+ Parch+ size+ NAge+ tit+ Ssp+
+                       FamilySize+ SibSp, data = combi_full)
+combi_new <- as.data.frame(predict(dummies, newdata = combi_full))
+
   # Split back into test and train sets
 train <- combi[1:891,]
 test <- combi[892:1309,]
 
+
+# Xg Boost Modelling
+library(xgboost)
+xgb <- xgboost(data = data.matrix(train), 
+               label = traino$Survived, 
+               eta = 0.1,
+               max_depth = 15, 
+               nround=20, 
+               seed = 1,
+               objective = "binary:logistic",
+               nthread = 2
+)
+
+model <- xgb.dump(xgb, with_stats = T)
+model[1:10]
+names <- dimnames(data.matrix(train))[[2]]
+importance_matrix <- xgb.importance(names, model = xgb)
+xgb.plot.importance(importance_matrix[7:30,]) 
+
+pred_test <- predict(xgb,data.matrix(test))
+prediction <- as.numeric(pred_test>0.5)
+submit <- data.frame(PassengerId = testo$PassengerId, Survived = prediction)
+write.csv(submit, file = "xgboost7.csv", row.names = FALSE)
+
+summary(train)
+
+
+
 # Build Random Forest Ensemble
 set.seed(415)
-fit <- randomForest(as.factor(Survived) ~ Pclass +Cabin+ Sex + Age +Count+ 
-                      SibSp + Parch + Fare +Mother+ Embarked + Title + FamilySize + FamilyID2,
+fit <- randomForest(as.factor(Survived) ~ Sex+ Cabin+Title+ Mother+ Pclass+ Embarked+
+                      Count+ Fare+ Age+ FamilyID2+ Parch+ size+ NAge+ tit+ Ssp+money+length+
+                      FamilySize+ SibSp+Fare,
                     data=train, importance=TRUE, ntree=2000)
+
+
+
 # Look at variable importance
 varImpPlot(fit)
 # Now let's make a prediction and write a submission file
 Prediction <- predict(fit, test)
 submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
-write.csv(submit, file = "forest.csv", row.names = FALSE)
+write.csv(submit, file = "forestnew.csv", row.names = FALSE)
 
 # Build condition inference tree Random Forest
 set.seed(415)
-fit <- cforest(as.factor(Survived) ~ Pclass + Sex +Count+ Age+ SibSp +Cabin+ Mother +Parch + Fare + Embarked + Title + FamilySize + FamilyID,data= train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
+fit <- cforest(as.factor(Survived) ~ Sex+ Cabin+Title+ Mother+ Pclass+ Embarked+
+                 Count+ Fare+ Age+ FamilyID2+ Parch+ size+ NAge+ Ssp+money+
+                 FamilySize+ SibSp+Fare,
+               data= train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
 # Now let's make a prediction and write a submission file
 Prediction <- predict(fit, test, OOB=TRUE, type = "response")
 submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
-write.csv(submit, file = "final.csv", row.names = FALSE)
+write.csv(submit, file = "cfornew.csv", row.names = FALSE)
